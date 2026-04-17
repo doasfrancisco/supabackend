@@ -15,9 +15,49 @@ export type ServiceNodeData = {
   kind: string
 }
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export type EndpointNodeData = {
+  name: string
+  method: HttpMethod
+  path: string
+  handler?: string
+  auth?: boolean
+}
+
+export type JobKind = 'cron' | 'queue'
+
+export type JobNodeData = {
+  name: string
+  kind: JobKind
+  schedule?: string
+  queue?: string
+  handler?: string
+}
+
+export type StateTransition = {
+  from: string
+  to: string
+  event: string
+}
+
+export type StateMachineNodeData = {
+  name: string
+  initial: string
+  states: string[]
+  transitions: StateTransition[]
+}
+
+export type CanvasNodeType =
+  | 'entity'
+  | 'service'
+  | 'endpoint'
+  | 'job'
+  | 'state_machine'
+
 export type CanvasNode = {
   id: string
-  type: 'entity' | 'service' | string
+  type: CanvasNodeType | string
   position: { x: number; y: number }
   data: Record<string, unknown> & { name?: string }
 }

@@ -6,14 +6,20 @@ import {
   type NodeTypes,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { EndpointNode } from './components/nodes/EndpointNode'
 import { EntityNode } from './components/nodes/EntityNode'
+import { JobNode } from './components/nodes/JobNode'
 import { ServiceNode } from './components/nodes/ServiceNode'
+import { StateMachineNode } from './components/nodes/StateMachineNode'
 import { useCanvasStore } from './store/canvas-store'
 import { useSync } from './sync/use-sync'
 
 const nodeTypes: NodeTypes = {
   entity: EntityNode,
   service: ServiceNode,
+  endpoint: EndpointNode,
+  job: JobNode,
+  state_machine: StateMachineNode,
 }
 
 export default function App() {

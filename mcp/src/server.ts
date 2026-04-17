@@ -1,8 +1,15 @@
-import { readFile, writeFile } from 'node:fs/promises'
-import { isAbsolute, resolve } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { applyOp, getState } from './canvas-client.js'
+import {
+  canvasToApp,
+  canvasToCompose,
+  canvasToJobs,
+  canvasToMachines,
+  canvasToRoutes,
+} from './codegen.js'
 import { canvasToPrisma, prismaToCanvas } from './prisma.js'
 import type { CanvasNode } from './types.js'
 
@@ -59,8 +66,8 @@ export function createServer() {
 
   server.tool(
     'get_nodes',
-    'List nodes on the canvas. Optionally filter by type ("entity" for DB tables, "service" for services/workers).',
-    { type: z.enum(['entity', 'service']).optional() },
+    'List nodes on the canvas. Optionally filter by type ("entity", "service", "endpoint", "job", "state_machine").',
+    { type: z.enum(['entity', 'service', 'endpoint', 'job', 'state_machine']).optional() },
     async ({ type }) =>
       run(async () => {
         const state = await getState()
@@ -300,6 +307,38 @@ export function createServer() {
   )
 
   server.tool(
+    'connect',
+    'Generic edge creator. Use for reads/writes/calls edges between any node types. For entity-field FKs, prefer add_fk (it sets per-field handles).',
+    {
+      from: z.string().describe('Source node id'),
+      to: z.string().describe('Target node id'),
+      kind: z.enum(['fk', 'calls', 'reads', 'writes']),
+      from_field: z.string().optional().describe('Optional source field name for entity-level handle'),
+      to_field: z.string().optional().describe('Optional target field name for entity-level handle'),
+      label: z.string().optional(),
+      id: z.string().optional(),
+    },
+    async ({ from, to, kind, from_field, to_field, label, id }) =>
+      run(async () => {
+        const edgeId =
+          id ??
+          `${from}__${kind}__${to}${from_field ? `_${from_field}` : ''}${to_field ? `_${to_field}` : ''}`
+        const result = await applyOp({
+          type: 'add_edge',
+          edge: {
+            id: edgeId,
+            source: from,
+            target: to,
+            ...(from_field ? { sourceHandle: `${from_field}-src` } : {}),
+            ...(to_field ? { targetHandle: `${to_field}-tgt` } : {}),
+            data: { kind, ...(label ? { label } : {}) },
+          },
+        })
+        return `Added ${kind} edge '${edgeId}'. Canvas rev=${result.rev}.`
+      }),
+  )
+
+  server.tool(
     'delete_edge',
     'Delete an edge by id.',
     { id: z.string() },
@@ -374,6 +413,285 @@ export function createServer() {
         const state = prismaToCanvas(source)
         const result = await applyOp({ type: 'replace_state', state })
         return `Imported ${state.nodes.length} entities and ${state.edges.length} FK edge(s) from ${absolute}. Canvas rev=${result.rev}.`
+      }),
+  )
+
+  // ─── ENDPOINT TOOLS ──────────────────────────────────────────────────────
+
+  const methodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+
+  server.tool(
+    'add_endpoint',
+    'Add an HTTP endpoint node. Wire `reads`/`writes` edges to entity nodes to get an auto-stubbed Prisma handler at export time.',
+    {
+      name: z.string().describe('Human label, e.g. "list users"'),
+      method: methodSchema,
+      path: z.string().describe('Route path, e.g. "/users" or "/users/:id"'),
+      id: z.string().optional(),
+      handler: z.string().optional().describe('Optional TS body for the handler; if omitted an auto-stub is generated from reads/writes edges'),
+      auth: z.boolean().optional(),
+      position: positionSchema.optional(),
+    },
+    async ({ name, method, path, id, handler, auth, position }) =>
+      run(async () => {
+        const nodeId = id ?? `${method.toLowerCase()}_${name.replace(/\W+/g, '_').toLowerCase()}`
+        const pos =
+          position ??
+          { x: 120 + Math.floor(Math.random() * 400), y: 120 + Math.floor(Math.random() * 200) }
+        const node: CanvasNode = {
+          id: nodeId,
+          type: 'endpoint',
+          position: pos,
+          data: { name, method, path, ...(handler ? { handler } : {}), ...(auth ? { auth: true } : {}) },
+        }
+        const result = await applyOp({ type: 'add_node', node })
+        return `Added endpoint ${method} ${path} (id=${nodeId}). Canvas rev=${result.rev}.`
+      }),
+  )
+
+  server.tool(
+    'update_endpoint',
+    "Update an endpoint's name, method, path, handler, auth flag, or position. Omit any parameter to leave it unchanged.",
+    {
+      id: z.string(),
+      name: z.string().optional(),
+      method: methodSchema.optional(),
+      path: z.string().optional(),
+      handler: z.string().optional(),
+      auth: z.boolean().optional(),
+      position: positionSchema.optional(),
+    },
+    async ({ id, name, method, path, handler, auth, position }) =>
+      run(async () => {
+        const patch: Record<string, unknown> = {}
+        if (name !== undefined) patch.name = name
+        if (method !== undefined) patch.method = method
+        if (path !== undefined) patch.path = path
+        if (handler !== undefined) patch.handler = handler
+        if (auth !== undefined) patch.auth = auth
+        const result = await applyOp({
+          type: 'update_node',
+          id,
+          patch: Object.keys(patch).length ? patch : undefined,
+          position,
+        })
+        return `Updated endpoint '${id}'. Canvas rev=${result.rev}.`
+      }),
+  )
+
+  // ─── JOB TOOLS ───────────────────────────────────────────────────────────
+
+  const jobKindSchema = z.enum(['cron', 'queue'])
+
+  server.tool(
+    'add_job',
+    'Add a background job node (cron or queue). Wire `reads`/`writes` edges to entities for auto-stubbed data access.',
+    {
+      name: z.string(),
+      kind: jobKindSchema,
+      id: z.string().optional(),
+      schedule: z.string().optional().describe('Cron expression, e.g. "0 * * * *" for hourly. Required for kind=cron.'),
+      queue: z.string().optional().describe('Queue name for BullMQ. Defaults to job name when kind=queue.'),
+      handler: z.string().optional().describe('Optional TS body for the job callback'),
+      position: positionSchema.optional(),
+    },
+    async ({ name, kind, id, schedule, queue, handler, position }) =>
+      run(async () => {
+        const nodeId = id ?? `job_${name.replace(/\W+/g, '_').toLowerCase()}`
+        const pos =
+          position ??
+          { x: 120 + Math.floor(Math.random() * 400), y: 120 + Math.floor(Math.random() * 200) }
+        const node: CanvasNode = {
+          id: nodeId,
+          type: 'job',
+          position: pos,
+          data: {
+            name,
+            kind,
+            ...(schedule ? { schedule } : {}),
+            ...(queue ? { queue } : {}),
+            ...(handler ? { handler } : {}),
+          },
+        }
+        const result = await applyOp({ type: 'add_node', node })
+        return `Added ${kind} job '${name}' (id=${nodeId}). Canvas rev=${result.rev}.`
+      }),
+  )
+
+  server.tool(
+    'update_job',
+    "Update a job node's name, kind, schedule, queue, handler, or position.",
+    {
+      id: z.string(),
+      name: z.string().optional(),
+      kind: jobKindSchema.optional(),
+      schedule: z.string().optional(),
+      queue: z.string().optional(),
+      handler: z.string().optional(),
+      position: positionSchema.optional(),
+    },
+    async ({ id, name, kind, schedule, queue, handler, position }) =>
+      run(async () => {
+        const patch: Record<string, unknown> = {}
+        if (name !== undefined) patch.name = name
+        if (kind !== undefined) patch.kind = kind
+        if (schedule !== undefined) patch.schedule = schedule
+        if (queue !== undefined) patch.queue = queue
+        if (handler !== undefined) patch.handler = handler
+        const result = await applyOp({
+          type: 'update_node',
+          id,
+          patch: Object.keys(patch).length ? patch : undefined,
+          position,
+        })
+        return `Updated job '${id}'. Canvas rev=${result.rev}.`
+      }),
+  )
+
+  // ─── STATE MACHINE TOOLS ─────────────────────────────────────────────────
+
+  const transitionSchema = z.object({
+    from: z.string(),
+    to: z.string(),
+    event: z.string().describe('Event name that triggers this transition, e.g. "PAY" or "CANCEL"'),
+  })
+
+  server.tool(
+    'add_state_machine',
+    'Add a state machine node. Exports to XState. Each transition is { from, to, event }.',
+    {
+      name: z.string().describe('Machine name, used as the export identifier, e.g. "order" → orderMachine'),
+      initial: z.string(),
+      states: z.array(z.string()),
+      transitions: z.array(transitionSchema),
+      id: z.string().optional(),
+      position: positionSchema.optional(),
+    },
+    async ({ name, initial, states, transitions, id, position }) =>
+      run(async () => {
+        const nodeId = id ?? `sm_${name.replace(/\W+/g, '_').toLowerCase()}`
+        const pos =
+          position ??
+          { x: 120 + Math.floor(Math.random() * 400), y: 120 + Math.floor(Math.random() * 200) }
+        const node: CanvasNode = {
+          id: nodeId,
+          type: 'state_machine',
+          position: pos,
+          data: { name, initial, states, transitions },
+        }
+        const result = await applyOp({ type: 'add_node', node })
+        return `Added state machine '${name}' (${states.length} states, ${transitions.length} transitions, id=${nodeId}). Canvas rev=${result.rev}.`
+      }),
+  )
+
+  server.tool(
+    'update_state_machine',
+    "Update a state machine's name, initial, states, transitions, or position. Arrays REPLACE the old ones.",
+    {
+      id: z.string(),
+      name: z.string().optional(),
+      initial: z.string().optional(),
+      states: z.array(z.string()).optional(),
+      transitions: z.array(transitionSchema).optional(),
+      position: positionSchema.optional(),
+    },
+    async ({ id, name, initial, states, transitions, position }) =>
+      run(async () => {
+        const patch: Record<string, unknown> = {}
+        if (name !== undefined) patch.name = name
+        if (initial !== undefined) patch.initial = initial
+        if (states !== undefined) patch.states = states
+        if (transitions !== undefined) patch.transitions = transitions
+        const result = await applyOp({
+          type: 'update_node',
+          id,
+          patch: Object.keys(patch).length ? patch : undefined,
+          position,
+        })
+        return `Updated state machine '${id}'. Canvas rev=${result.rev}.`
+      }),
+  )
+
+  // ─── CODEGEN ─────────────────────────────────────────────────────────────
+
+  server.tool(
+    'export_routes',
+    'Write an Express router TS file generated from the canvas endpoint nodes.',
+    { path: z.string().describe('Target path, e.g. "./src/routes.ts"') },
+    async ({ path: targetPath }) =>
+      run(async () => {
+        const state = await getState()
+        const code = canvasToRoutes(state)
+        const absolute = absolutize(targetPath)
+        await mkdir(dirname(absolute), { recursive: true })
+        await writeFile(absolute, code, 'utf8')
+        return `Wrote ${code.length} bytes to ${absolute}`
+      }),
+  )
+
+  server.tool(
+    'export_jobs',
+    'Write a jobs TS file (cron + BullMQ workers) generated from the canvas job nodes.',
+    { path: z.string().describe('Target path, e.g. "./src/jobs.ts"') },
+    async ({ path: targetPath }) =>
+      run(async () => {
+        const state = await getState()
+        const code = canvasToJobs(state)
+        const absolute = absolutize(targetPath)
+        await mkdir(dirname(absolute), { recursive: true })
+        await writeFile(absolute, code, 'utf8')
+        return `Wrote ${code.length} bytes to ${absolute}`
+      }),
+  )
+
+  server.tool(
+    'export_machines',
+    'Write XState machine definitions generated from state_machine nodes.',
+    { path: z.string().describe('Target path, e.g. "./src/machines.ts"') },
+    async ({ path: targetPath }) =>
+      run(async () => {
+        const state = await getState()
+        const code = canvasToMachines(state)
+        const absolute = absolutize(targetPath)
+        await mkdir(dirname(absolute), { recursive: true })
+        await writeFile(absolute, code, 'utf8')
+        return `Wrote ${code.length} bytes to ${absolute}`
+      }),
+  )
+
+  server.tool(
+    'export_compose',
+    'Write a docker-compose.yml generated from service nodes (plus auto-added db/redis when entities/queue jobs exist).',
+    { path: z.string().describe('Target path, e.g. "./docker-compose.yml"') },
+    async ({ path: targetPath }) =>
+      run(async () => {
+        const state = await getState()
+        const yml = canvasToCompose(state)
+        const absolute = absolutize(targetPath)
+        await mkdir(dirname(absolute), { recursive: true })
+        await writeFile(absolute, yml, 'utf8')
+        return `Wrote ${yml.length} bytes to ${absolute}`
+      }),
+  )
+
+  server.tool(
+    'export_app',
+    'Generate the ENTIRE app directory from the canvas: package.json, tsconfig, Prisma schema, Express routes, jobs, state machines, docker-compose, README. Creates nested folders.',
+    { dir: z.string().describe('Target directory, e.g. "./test/my-app"') },
+    async ({ dir: targetDir }) =>
+      run(async () => {
+        const state = await getState()
+        const files = canvasToApp(state)
+        const absolute = absolutize(targetDir)
+        await mkdir(absolute, { recursive: true })
+        const written: string[] = []
+        for (const [rel, contents] of Object.entries(files)) {
+          const full = join(absolute, rel)
+          await mkdir(dirname(full), { recursive: true })
+          await writeFile(full, contents, 'utf8')
+          written.push(`${rel} (${contents.length} bytes)`)
+        }
+        return `Wrote ${written.length} files to ${absolute}:\n${written.map((w) => `  - ${w}`).join('\n')}`
       }),
   )
 
