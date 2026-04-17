@@ -1,7 +1,7 @@
 import { useCanvasStore, type PageId } from '../store/canvas-store'
 
 const PAGE_LABEL: Record<PageId, string> = {
-  all: 'All',
+  system: 'System',
   models: 'Models',
   endpoints: 'Endpoints',
   jobs: 'Jobs',
@@ -13,7 +13,6 @@ export function Breadcrumb() {
   const currentPage = useCanvasStore((s) => s.currentPage)
   const drillTarget = useCanvasStore((s) => s.drillTarget)
   const nodes = useCanvasStore((s) => s.nodes)
-  const setCurrentPage = useCanvasStore((s) => s.setCurrentPage)
   const setDrillTarget = useCanvasStore((s) => s.setDrillTarget)
 
   const drillNode = drillTarget ? nodes.find((n) => n.id === drillTarget) : null
@@ -23,17 +22,10 @@ export function Breadcrumb() {
 
   const crumbs: Crumb[] = []
   crumbs.push({
-    label: 'System',
-    onClick: () => setCurrentPage('all'),
-    active: currentPage === 'all' && !drillTarget,
+    label: PAGE_LABEL[currentPage],
+    onClick: drillTarget ? () => setDrillTarget(null) : undefined,
+    active: !drillTarget,
   })
-  if (currentPage !== 'all' || drillTarget) {
-    crumbs.push({
-      label: PAGE_LABEL[currentPage],
-      onClick: () => setDrillTarget(null),
-      active: !drillTarget,
-    })
-  }
   if (drillTarget && drillName) {
     crumbs.push({ label: drillName, active: true })
   }

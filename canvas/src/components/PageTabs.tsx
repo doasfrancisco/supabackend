@@ -1,7 +1,7 @@
 import { useCanvasStore, type PageId } from '../store/canvas-store'
 
 const PAGES: Array<{ id: PageId; label: string }> = [
-  { id: 'all', label: 'All' },
+  { id: 'system', label: 'System' },
   { id: 'models', label: 'Models' },
   { id: 'endpoints', label: 'Endpoints' },
   { id: 'jobs', label: 'Jobs' },
@@ -18,7 +18,7 @@ export function PageTabs() {
   for (const n of nodes) counts[n.type] = (counts[n.type] ?? 0) + 1
 
   const countFor = (id: PageId): number | null => {
-    if (id === 'all') return nodes.length
+    if (id === 'system') return null
     if (id === 'models') return counts.entity ?? 0
     if (id === 'endpoints') return counts.endpoint ?? 0
     if (id === 'jobs') return counts.job ?? 0

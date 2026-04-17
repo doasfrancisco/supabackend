@@ -53,7 +53,7 @@ const initial: CanvasState = {
 }
 
 export type PageId =
-  | 'all'
+  | 'system'
   | 'models'
   | 'endpoints'
   | 'jobs'
@@ -61,19 +61,35 @@ export type PageId =
   | 'services'
 
 const PAGE_STORAGE_KEY = 'supabackend.currentPage'
+const VALID_PAGES: PageId[] = [
+  'system',
+  'models',
+  'endpoints',
+  'jobs',
+  'state_machines',
+  'services',
+]
 
 function loadInitialPage(): PageId {
-  if (typeof window === 'undefined') return 'all'
+  if (typeof window === 'undefined') return 'models'
   const saved = window.localStorage.getItem(PAGE_STORAGE_KEY)
-  const valid: PageId[] = ['all', 'models', 'endpoints', 'jobs', 'state_machines', 'services']
-  return (valid as string[]).includes(saved ?? '') ? (saved as PageId) : 'all'
+  return (VALID_PAGES as string[]).includes(saved ?? '') ? (saved as PageId) : 'models'
 }
+
+export type FocusRequest = { nodeId: string; token: number }
 
 type Store = CanvasState & {
   currentPage: PageId
   drillTarget: string | null
+  focusRequest: FocusRequest | null
+  pageEnterToken: number
+  codePanelNodeId: string | null
+  systemFileSelection: string | null
   setCurrentPage: (page: PageId) => void
   setDrillTarget: (id: string | null) => void
+  setFocusNode: (id: string) => void
+  setCodePanel: (nodeId: string | null) => void
+  setSystemFile: (path: string | null) => void
   setAll: (s: CanvasState) => void
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void
@@ -85,13 +101,27 @@ export const useCanvasStore = create<Store>((set, get) => ({
   edges: initial.edges,
   currentPage: loadInitialPage(),
   drillTarget: null,
+  focusRequest: null,
+  pageEnterToken: 0,
+  codePanelNodeId: null,
+  systemFileSelection: null,
   setCurrentPage: (page) => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(PAGE_STORAGE_KEY, page)
     }
-    set({ currentPage: page, drillTarget: null })
+    set((s) => ({
+      currentPage: page,
+      drillTarget: null,
+      codePanelNodeId: null,
+      systemFileSelection: null,
+      pageEnterToken: s.pageEnterToken + 1,
+    }))
   },
   setDrillTarget: (id) => set({ drillTarget: id }),
+  setFocusNode: (id) =>
+    set((s) => ({ focusRequest: { nodeId: id, token: (s.focusRequest?.token ?? 0) + 1 } })),
+  setCodePanel: (nodeId) => set({ codePanelNodeId: nodeId }),
+  setSystemFile: (path) => set({ systemFileSelection: path }),
   setAll: (s) => set({ nodes: s.nodes, edges: s.edges }),
   onNodesChange: (changes) =>
     set({ nodes: applyNodeChanges(changes, get().nodes) }),

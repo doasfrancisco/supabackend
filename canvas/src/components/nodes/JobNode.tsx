@@ -24,8 +24,8 @@ export function JobNode({ id, data }: NodeProps<JobNodeType>) {
 
   const edges = useCanvasStore((s) => s.edges)
   const nodes = useCanvasStore((s) => s.nodes)
-  const currentPage = useCanvasStore((s) => s.currentPage)
   const setCurrentPage = useCanvasStore((s) => s.setCurrentPage)
+  const setFocusNode = useCanvasStore((s) => s.setFocusNode)
 
   const refs = useMemo(() => {
     const reads: Array<{ targetId: string; name: string }> = []
@@ -42,7 +42,12 @@ export function JobNode({ id, data }: NodeProps<JobNodeType>) {
     return { reads, writes }
   }, [edges, nodes, id])
 
-  const showPills = currentPage !== 'all' && (refs.reads.length > 0 || refs.writes.length > 0)
+  const showPills = refs.reads.length > 0 || refs.writes.length > 0
+
+  const jumpToModel = (targetId: string) => {
+    setCurrentPage('models')
+    setFocusNode(targetId)
+  }
 
   return (
     <div
@@ -91,7 +96,7 @@ export function JobNode({ id, data }: NodeProps<JobNodeType>) {
               title={`Jump to Models (reads ${r.name})`}
               onClick={(e) => {
                 e.stopPropagation()
-                setCurrentPage('models')
+                jumpToModel(r.targetId)
               }}
             >
               reads {r.name}
@@ -104,7 +109,7 @@ export function JobNode({ id, data }: NodeProps<JobNodeType>) {
               title={`Jump to Models (writes ${w.name})`}
               onClick={(e) => {
                 e.stopPropagation()
-                setCurrentPage('models')
+                jumpToModel(w.targetId)
               }}
             >
               writes {w.name}
