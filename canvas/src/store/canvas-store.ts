@@ -52,7 +52,28 @@ const initial: CanvasState = {
   ],
 }
 
+export type PageId =
+  | 'all'
+  | 'models'
+  | 'endpoints'
+  | 'jobs'
+  | 'state_machines'
+  | 'services'
+
+const PAGE_STORAGE_KEY = 'supabackend.currentPage'
+
+function loadInitialPage(): PageId {
+  if (typeof window === 'undefined') return 'all'
+  const saved = window.localStorage.getItem(PAGE_STORAGE_KEY)
+  const valid: PageId[] = ['all', 'models', 'endpoints', 'jobs', 'state_machines', 'services']
+  return (valid as string[]).includes(saved ?? '') ? (saved as PageId) : 'all'
+}
+
 type Store = CanvasState & {
+  currentPage: PageId
+  drillTarget: string | null
+  setCurrentPage: (page: PageId) => void
+  setDrillTarget: (id: string | null) => void
   setAll: (s: CanvasState) => void
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void
@@ -62,6 +83,15 @@ type Store = CanvasState & {
 export const useCanvasStore = create<Store>((set, get) => ({
   nodes: initial.nodes,
   edges: initial.edges,
+  currentPage: loadInitialPage(),
+  drillTarget: null,
+  setCurrentPage: (page) => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(PAGE_STORAGE_KEY, page)
+    }
+    set({ currentPage: page, drillTarget: null })
+  },
+  setDrillTarget: (id) => set({ drillTarget: id }),
   setAll: (s) => set({ nodes: s.nodes, edges: s.edges }),
   onNodesChange: (changes) =>
     set({ nodes: applyNodeChanges(changes, get().nodes) }),
